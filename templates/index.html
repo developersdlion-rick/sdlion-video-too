@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Personalize Your SD Lion Video</title>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: linear-gradient(135deg, #0a1128, #1a2a52);
+    color: #fff;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0;
+    padding: 20px;
+  }
+  .card {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 16px;
+    padding: 32px;
+    max-width: 420px;
+    width: 100%;
+  }
+  h1 { font-size: 1.4rem; margin-bottom: 4px; }
+  p.sub { color: #b8c2d9; font-size: 0.9rem; margin-top: 0; margin-bottom: 24px; }
+  label { display: block; font-size: 0.85rem; margin-bottom: 6px; color: #d5dcee; }
+  input[type=text] {
+    width: 100%;
+    padding: 12px 14px;
+    border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.2);
+    background: rgba(255,255,255,0.05);
+    color: #fff;
+    font-size: 1rem;
+    margin-bottom: 18px;
+    box-sizing: border-box;
+  }
+  button {
+    width: 100%;
+    padding: 14px;
+    border-radius: 8px;
+    border: none;
+    background: linear-gradient(135deg, #e8562f, #c0392b);
+    color: #fff;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.6; cursor: not-allowed; }
+  #status { margin-top: 16px; font-size: 0.9rem; }
+  #status.error { color: #ff8a80; }
+  #status.success { color: #7fd8a0; }
+  a.download-link {
+    display: inline-block;
+    margin-top: 10px;
+    color: #ffd280;
+    font-weight: 600;
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Get Your Personalized SD Lion Video</h1>
+    <p class="sub">Enter your name and shop name — we'll generate your own version of the video.</p>
+
+    <form id="genForm">
+      <label for="name">Your Name</label>
+      <input type="text" id="name" name="name" placeholder="e.g. Hansraj Kumbhkar" required>
+
+      <label for="shop">Shop / Counter Name</label>
+      <input type="text" id="shop" name="shop" placeholder="e.g. Krishna Trading Company, Gejgarh" required>
+
+      <button type="submit" id="submitBtn">Generate My Video</button>
+    </form>
+
+    <div id="status"></div>
+  </div>
+
+<script>
+const form = document.getElementById('genForm');
+const status = document.getElementById('status');
+const submitBtn = document.getElementById('submitBtn');
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  status.className = '';
+  status.textContent = 'Generating your video... this can take up to a minute.';
+  submitBtn.disabled = true;
+
+  const formData = new FormData(form);
+  try {
+    const res = await fetch('/generate', { method: 'POST', body: formData });
+    const data = await res.json();
+
+    if (!res.ok) {
+      status.className = 'error';
+      status.textContent = data.error || 'Something went wrong.';
+    } else {
+      status.className = 'success';
+      status.innerHTML = 'Your video is ready! <br><a class="download-link" href="' + data.download_url + '">Download Video</a>';
+    }
+  } catch (err) {
+    status.className = 'error';
+    status.textContent = 'Network error: ' + err.message;
+  } finally {
+    submitBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
