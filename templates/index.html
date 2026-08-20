@@ -87,7 +87,7 @@ const submitBtn = document.getElementById('submitBtn');
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
   status.className = '';
-  status.textContent = 'Generating your video... this can take up to a minute.';
+  status.textContent = 'Generating your video... this can take 1-2 minutes on first load, please wait.';
   submitBtn.disabled = true;
 
   const formData = new FormData(form);

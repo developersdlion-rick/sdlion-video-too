@@ -1,18 +1,23 @@
 """
 Core pipeline: takes a dealer name + shop name, generates the personalized
-audio line, swaps it into the source video's 39.5s-44.0s segment, and
-stitches everything back into a final downloadable video.
+audio line, swaps it into the source video's segment window, and stitches
+everything back into a final downloadable video.
 
 Approach (voiceover swap, no lip-sync):
-  1. Split source video into 3 parts: [before] [segment] [after]
-  2. Generate TTS audio for the personalized line
-  3. Time-stretch the TTS audio (atempo) so its duration exactly matches
+  1. Generate TTS audio for the personalized line
+  2. Time-stretch the TTS audio (atempo) so its duration exactly matches
      the segment's duration (SEGMENT_DURATION) -- keeps A/V in sync
      without needing to touch the video frames at all.
-  4. Replace the segment's audio track with the new TTS audio
-     (original segment audio is dropped so there's no double-voice;
-     you can optionally duck in background music instead -- see notes below)
-  5. Concatenate [before] + [new segment] + [after] -> final video
+  3. In ONE ffmpeg pass: trim the source video into [before]/[segment]/[after]
+     pieces using filter_complex, swap in the new TTS audio for the segment
+     piece, and concatenate everything -- all in a single encode.
+
+Why a single pass matters: an earlier version of this ran 5 separate ffmpeg
+processes (each fully decoding + re-encoding video), which worked fine on a
+powerful machine but exceeded the CPU/RAM available on constrained hosting
+(e.g. Render's free tier, 512MB RAM) and caused the process to be silently
+killed mid-request (OOM). A single ffmpeg invocation that decodes the
+source once and encodes the output once uses dramatically less memory.
 """
 import os
 import re
@@ -83,10 +88,9 @@ def build_personalized_video(name: str, shop: str, voice_id: str = None) -> str:
         fitted_tts_path,
     ])
 
-    # Pad or trim to *exactly* target_duration so the concat is frame-tight.
-    # Force stereo + 44100Hz here so it matches the original video's audio
-    # format exactly -- mismatched channel layout (mono TTS vs stereo
-    # original) is what causes corrupted/broken audio after this point.
+    # Pad or trim to *exactly* target_duration, and force stereo + 44100Hz
+    # so it matches the original video's audio format exactly (mismatched
+    # channel layout is what causes corrupted/broken audio at the splice).
     exact_tts_path = os.path.join(job_temp, "tts_exact.mp3")
     _run([
         "ffmpeg", "-y", "-i", fitted_tts_path,
@@ -96,56 +100,35 @@ def build_personalized_video(name: str, shop: str, voice_id: str = None) -> str:
         exact_tts_path,
     ])
 
-    # 3. Split source video into before / segment / after (video only cuts,
-    #    re-encoded for frame-accurate splits)
-    before_path = os.path.join(job_temp, "before.mp4")
-    segment_video_path = os.path.join(job_temp, "segment_video.mp4")
-    after_path = os.path.join(job_temp, "after.mp4")
+    # 3. Single-pass trim + swap + concat.
+    #    Input 0 = source video (used for all 3 video pieces + before/after audio)
+    #    Input 1 = the new TTS audio (used for the segment's audio only)
+    source_duration = _ffprobe_duration(config.SOURCE_VIDEO)
+    seg_start = config.SEGMENT_START
+    seg_end = config.SEGMENT_END
 
-    _run([
-        "ffmpeg", "-y", "-i", config.SOURCE_VIDEO,
-        "-to", str(config.SEGMENT_START),
-        "-c:v", "libx264", "-c:a", "aac", "-avoid_negative_ts", "make_zero",
-        before_path,
-    ])
-    _run([
-        "ffmpeg", "-y", "-ss", str(config.SEGMENT_START), "-i", config.SOURCE_VIDEO,
-        "-t", str(target_duration),
-        "-c:v", "libx264", "-an",  # drop original segment audio
-        segment_video_path,
-    ])
-    _run([
-        "ffmpeg", "-y", "-ss", str(config.SEGMENT_END), "-i", config.SOURCE_VIDEO,
-        "-c:v", "libx264", "-c:a", "aac", "-avoid_negative_ts", "make_zero",
-        after_path,
-    ])
+    filter_complex = (
+        f"[0:v]trim=start=0:end={seg_start},setpts=PTS-STARTPTS[v0];"
+        f"[0:a]atrim=start=0:end={seg_start},asetpts=PTS-STARTPTS[a0];"
+        f"[0:v]trim=start={seg_start}:end={seg_end},setpts=PTS-STARTPTS[v1];"
+        f"[1:a]asetpts=PTS-STARTPTS[a1];"
+        f"[0:v]trim=start={seg_end}:end={source_duration},setpts=PTS-STARTPTS[v2];"
+        f"[0:a]atrim=start={seg_end}:end={source_duration},asetpts=PTS-STARTPTS[a2];"
+        f"[v0][a0][v1][a1][v2][a2]concat=n=3:v=1:a=1[catv][outa];"
+        f"[catv]scale={config.OUTPUT_WIDTH}:{config.OUTPUT_HEIGHT}[outv]"
+    )
 
-    # 4. Attach the new TTS audio to the segment video
-    segment_final_path = os.path.join(job_temp, "segment_final.mp4")
-    _run([
-        "ffmpeg", "-y", "-i", segment_video_path, "-i", exact_tts_path,
-        "-c:v", "copy", "-c:a", "aac", "-ar", "44100", "-ac", "2", "-shortest",
-        segment_final_path,
-    ])
-
-    # 5. Concatenate before + segment_final + after using the CONCAT FILTER
-    # (not the concat demuxer). The concat demuxer does raw packet-level
-    # splicing and breaks badly when inputs have even slightly different
-    # audio formats/timestamps -- it produced corrupted/noisy audio after
-    # the splice point. The concat filter instead fully decodes each input
-    # and re-encodes the joined result, which is slower but reliable.
     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
     final_path = os.path.join(config.OUTPUT_DIR, f"{job_id}_{name}_{shop}.mp4".replace(" ", "_"))
-    filter_complex = (
-        "[0:v:0][0:a:0][1:v:0][1:a:0][2:v:0][2:a:0]"
-        "concat=n=3:v=1:a=1[outv][outa]"
-    )
+
     _run([
         "ffmpeg", "-y",
-        "-i", before_path, "-i", segment_final_path, "-i", after_path,
+        "-i", config.SOURCE_VIDEO,
+        "-i", exact_tts_path,
         "-filter_complex", filter_complex,
         "-map", "[outv]", "-map", "[outa]",
-        "-c:v", "libx264", "-c:a", "aac", "-ar", "44100", "-ac", "2",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-threads", "1",
+        "-c:a", "aac", "-ar", "44100", "-ac", "2",
         "-movflags", "+faststart",
         final_path,
     ])
@@ -161,5 +144,5 @@ def build_personalized_video(name: str, shop: str, voice_id: str = None) -> str:
 if __name__ == "__main__":
     # Manual test:
     #   ELEVENLABS_API_KEY=xxx python video_pipeline.py
-    out = build_personalized_video("Hansraj Kumbhkar", "Krishna Trading Company Gejgarh")
+    out = build_personalized_video("Ram Sharma", "Sharma Steel Corner Bihar")
     print("Done:", out)

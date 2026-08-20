@@ -25,4 +25,10 @@ RUN mkdir -p output temp
 # Render sets the PORT environment variable automatically — the app must
 # listen on that port. gunicorn is a production-grade server (the Flask
 # dev server used by `python app.py` isn't meant for real traffic).
-CMD gunicorn --bind 0.0.0.0:$PORT --timeout 120 app:app
+#
+# --workers 1: Render's free tier only gives ~0.1 CPU -- running multiple
+#   workers would just have them starve each other for the same sliver
+#   of CPU, making everything slower, not more concurrent.
+# --timeout 300: video generation is CPU-heavy and free-tier CPU is very
+#   weak, so give requests generous headroom before gunicorn kills them.
+CMD gunicorn --bind 0.0.0.0:$PORT --workers 1 --timeout 300 app:app

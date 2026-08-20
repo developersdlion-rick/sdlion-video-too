@@ -63,3 +63,12 @@ SARVAM_MODEL = "bulbul:v3"        # latest Sarvam TTS model
 SARVAM_LANGUAGE_CODE = "hi-IN"    # Hindi
 SARVAM_PACE = 1.0                 # 0.5 (slow) - 2.0 (fast) for bulbul:v3
 SARVAM_SAMPLE_RATE = 44100        # matches our video's audio sample rate
+
+# ── Output video settings ─────────────────────────────────────────────
+# Downscaled from the source's 1080x1920 to keep encoding fast enough to
+# finish within a request on constrained/free hosting (e.g. Render free
+# tier's very limited CPU). 480x854 keeps a 9:16 aspect ratio and still
+# looks sharp on phones -- this is the same resolution class as WhatsApp/
+# Instagram Story video, so it's not a real quality downgrade in practice.
+OUTPUT_WIDTH = 480
+OUTPUT_HEIGHT = 854
